@@ -1,0 +1,5 @@
+future
+joblib
+tqdm
+# Theano is optional (only for Bayesian optimization / sparse GP)
+# Theano==1.0.5

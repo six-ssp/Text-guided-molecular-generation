@@ -1,0 +1,3 @@
+The molecule is an aromatic amide.
+The molecule is a long-chain fatty alcohol.
+The molecule is a heterocyclic carboxylic acid.

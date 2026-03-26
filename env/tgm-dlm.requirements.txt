@@ -1,0 +1,7 @@
+blobfile
+fcd
+nltk
+python-Levenshtein
+regex
+tqdm
+wandb
