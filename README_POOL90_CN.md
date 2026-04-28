@@ -79,6 +79,26 @@
 4. **全量生成耗时长、内存压力高**  
    这次全量 `3021x8` 生成耗时约 `13h20m`；必须使用分块生成（`WORK_CHUNK_SIZE`）与小解码批次（`DECODE_BATCH_SIZE`）避免被系统 OOM killer 杀进程。
 
+5. **Exact match 受 SD-VAE 重构上限限制**  
+   当前 SD-VAE 使用的是 ZINC 预训练权重 `zinc_kl_avg.model`。在 ChEBI-20 分子上，`SMILES -> SD-VAE latent -> SMILES` 不是无损压缩；实测小池子里直接解码真实 latent 的 canonical exact 仍为 `0`。因此后续提升 Exact 的关键不是单纯调 diffusion 采样，而是先提高 SD-VAE latent 的可解码性。
+
+### 1.5 latent inversion 试验结果（2026-04-28，test_pool90 前 128 条）
+
+目的：验证“冻结 SD-VAE decoder，只优化每个分子的 latent”能否提高 SD-VAE 解码上限。
+
+对照设置：同一批 `test_pool90` 前 128 条，实际可编码样本 `125` 条。
+
+| 指标 | 原始 SD-VAE latent | latent inversion 后 |
+|---|---:|---:|
+| Validity | `0.960` | `0.968` |
+| Canonical Exact | `0.024` | `0.664` |
+| Levenshtein distance | `27.928` | `13.232` |
+| MACCS FTS | `0.411` | `0.886` |
+| RDK FTS | `0.273` | `0.844` |
+| Morgan FTS | `0.232` | `0.801` |
+
+结论：Exact 的主要瓶颈确实在 SD-VAE latent 可解码性。后续正式提升生成指标时，推荐先对 `train_pool90` 做 latent inversion，再用反演 latent 训练 diffusion。
+
 ---
 
 ## 2. 目录与核心文件
@@ -90,6 +110,10 @@
 - `03_train.sh`：训练封装。
 - `04_generate.sh`：生成封装。
 - `05_evaluate.sh`：评估脚本（有效率/唯一率/新颖性/多样性）。
+- `09_optimize_sdvae_latents.sh`：latent inversion 入口；冻结 SD-VAE decoder，只优化每个分子的 latent，使其更容易解码回目标 SMILES。
+- `scripts/evaluate_sdvae_reconstruction.py`：评估 SD-VAE 重构上限。
+- `scripts/optimize_sdvae_latents.py`：执行 latent inversion，输出可替换训练用的 `cid -> latent` 文件。
+- `scripts/sdvae_utils.py`：SD-VAE 评估/反演共享工具函数。
 - `scripts/evaluate_text_guided_metrics.py`：逐参考分子九指标评估脚本（BLEU、Exact、Levenshtein、指纹相似度、FCD、Validity；Text2Mol 支持外部结果导入）。
 - `README_POOL90_CN.md`：本说明。
 
@@ -120,6 +144,7 @@
 - `06_sweep_checkpoints.sh`：批量扫多个 checkpoint 做对比评估。
 - `07_full_pipeline.sh`：总控入口（status/cleanup/prepare/train/generate/evaluate/full）。
 - `08_filter_legal.sh`：后处理过滤（合法性/规则过滤场景）。
+- `09_optimize_sdvae_latents.sh`：优化 SD-VAE latent，用于提高 SD-VAE 解码上限和后续 Exact 指标。
 - `run_local_oneclick.sh`：底层 one-click 执行器（被 `07` 调用）。
 
 ---
@@ -337,6 +362,68 @@ RERANK_METRIC=morgan
 
 注意：`RERANK_REFERENCE_FILE` 使用真实参考 SMILES，是 oracle rerank，只适合分析上限或 ablation，不适合作为真实生成能力直接报告。
 
+### 7.7 评估 SD-VAE 重构上限
+
+先确认 SD-VAE 自己能不能把真实分子重构回来。这个指标是后续 Exact 的硬上限之一。
+
+```bash
+./.mamba-tgmsd/bin/python scripts/evaluate_sdvae_reconstruction.py \
+  --split test_pool90 \
+  --limit 128 \
+  --output-json /home/six_ssp/my_project/ChEBI-20_data/sdvae_recon_test128.json \
+  --decoded-tsv /home/six_ssp/my_project/ChEBI-20_data/sdvae_recon_test128.tsv \
+  --decode-batch-size 4 \
+  --mode gpu
+```
+
+如果这里 `exact_match_canonical_smiles` 很低，说明瓶颈在 SD-VAE 重构，而不是 diffusion 采样。
+
+### 7.8 latent inversion 提升 SD-VAE 解码上限
+
+冻结 SD-VAE decoder，只优化每个分子的 latent，使 decoder 对目标 grammar action 的概率更高。小样本验证中，`steps=200` 能把可编码样本的 canonical exact 从 `0` 提到明显非零。
+
+小范围试跑：
+
+```bash
+SPLIT=test_pool90 \
+LIMIT=128 \
+STEPS=200 \
+LR=0.03 \
+Z_L2=0.00001 \
+BATCH_SIZE=2 \
+DECODE_BATCH_SIZE=2 \
+OUTPUT_LATENTS=/home/six_ssp/my_project/ChEBI-20_data/test_pool90_sdvae_latents_inverted_128.pt \
+./09_optimize_sdvae_latents.sh
+```
+
+训练集正式反演（耗时较长，可断点续跑）：
+
+```bash
+SPLIT=train_pool90 \
+LIMIT=0 \
+STEPS=200 \
+LR=0.03 \
+Z_L2=0.00001 \
+BATCH_SIZE=4 \
+DECODE_BATCH_SIZE=2 \
+OUTPUT_LATENTS=/home/six_ssp/my_project/ChEBI-20_data/train_pool90_sdvae_latents_inverted.pt \
+./09_optimize_sdvae_latents.sh
+```
+
+用反演后的 latent 训练 diffusion：
+
+```bash
+MODE=train \
+TEXT_FUSION=crossattn \
+LATENT_FILE=/home/six_ssp/my_project/ChEBI-20_data/train_pool90_sdvae_latents_inverted.pt \
+CHECKPOINT_PATH=/home/six_ssp/my_project/tgm-dlm/checkpoints_sdvae_latent_crossattn_inverted \
+INIT_CHECKPOINT=/home/six_ssp/my_project/tgm-dlm/checkpoints_sdvae_latent_crossattn/PLAIN_model1400000.pt \
+TRAIN_STEPS=1200000 \
+./07_full_pipeline.sh
+```
+
+说明：`LATENT_FILE` 现在会从 `07_full_pipeline.sh` 传到训练脚本。反演 latent 改变了 diffusion 的学习目标，建议单独用新 checkpoint 目录，避免和旧实验混在一起。
+
 ---
 
 ## 8. 参数说明（高频）
@@ -347,6 +434,7 @@ RERANK_METRIC=morgan
 |---|---:|---|
 | `AUTO_TUNE` | `1` | 按显存自动调性能参数 |
 | `BATCH_SIZE` | 自动 | 训练 batch size |
+| `LATENT_FILE` | 空 | 训练使用的 latent 文件；为空时由 `03_train.sh` 默认使用 `<split>_sdvae_latents.pt` |
 | `NUM_WORKERS` | 自动 | DataLoader workers |
 | `USE_FP16` | 自动/`1` | 是否启用 fp16 |
 | `PIN_MEMORY` | 自动 | DataLoader pin memory |
