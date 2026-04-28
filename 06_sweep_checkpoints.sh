@@ -2,6 +2,22 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_PYTHON="${ROOT_DIR}/.mamba-tgmsd/bin/python"
+PYTHON_BIN="${PYTHON_BIN:-}"
+if [[ -z "${PYTHON_BIN}" ]]; then
+  if [[ -x "${DEFAULT_PYTHON}" ]]; then
+    PYTHON_BIN="${DEFAULT_PYTHON}"
+  else
+    echo "[fatal] project python not found: ${DEFAULT_PYTHON}" >&2
+    echo "[fatal] repair .mamba-tgmsd or set PYTHON_BIN=/abs/path/to/python" >&2
+    exit 1
+  fi
+fi
+if ! "${PYTHON_BIN}" -V >/dev/null 2>&1; then
+  echo "[fatal] python is not runnable: ${PYTHON_BIN}" >&2
+  exit 1
+fi
+
 CHECKPOINT_PATH="${CHECKPOINT_PATH:-${ROOT_DIR}/tgm-dlm/checkpoints_sdvae_latent_crossattn}"
 START_STEP="${START_STEP:-0}"
 END_STEP="${END_STEP:-99999999}"
@@ -54,7 +70,7 @@ for model in "${MODELS[@]}"; do
 
   metrics="$(JSON_ONLY=1 GENERATED_FILE="${out_file}" "${ROOT_DIR}/05_evaluate.sh")"
   read -r valid_ratio unique_ratio novelty_ratio diversity < <(
-    METRICS_JSON="${metrics}" "${ROOT_DIR}/.mamba-tgmsd/bin/python" - <<'PY'
+    METRICS_JSON="${metrics}" "${PYTHON_BIN}" - <<'PY'
 import json
 import os
 

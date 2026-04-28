@@ -294,6 +294,7 @@ run_generate() {
 }
 
 run_evaluate() {
+  PYTHON_BIN="${PYTHON_BIN}" \
   GENERATED_FILE="${OUTPUT}" \
   DATASET_DIR="${DATASET_DIR}" \
   ./05_evaluate.sh
