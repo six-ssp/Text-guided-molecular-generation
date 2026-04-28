@@ -317,6 +317,7 @@ SELECT_VALID_UNIQUE=1 \
 DECODE_RANDOM=1 \
 GEN_BATCH_SIZE=2 \
 DECODE_BATCH_SIZE=4 \
+DIFFUSION_STEPS=2000 \
 OUTPUT=/home/six_ssp/my_project/ChEBI-20_data/prompt_generated_diverse.tsv \
 ./07_full_pipeline.sh
 ```
@@ -374,6 +375,7 @@ RERANK_METRIC=morgan
 | `GEN_BATCH_SIZE` | 自动 | 扩散采样阶段 batch size |
 | `WORK_CHUNK_SIZE` | `256` | 分块生成大小，控制主内存峰值 |
 | `DECODE_BATCH_SIZE` | `32` | SD-VAE 解码阶段 batch size（OOM 首先调小它） |
+| `DIFFUSION_STEPS` | `2000` | 生成采样步数；小池子快速试验可用 `500`，正式结果建议保持 `2000` |
 | `OVERSAMPLE_FACTOR` | `1` | 每个 prompt 的候选过采样倍数 |
 | `SELECT_VALID_UNIQUE` | `0` | 是否优先输出合法且唯一的候选 |
 | `DECODE_RANDOM` | `0` | 是否启用 SD-VAE 随机解码 |
