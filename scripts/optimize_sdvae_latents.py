@@ -12,6 +12,7 @@ import argparse
 import csv
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -32,13 +33,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-latents", default="", help="Defaults to <split>_sdvae_latents_inverted.pt")
     parser.add_argument("--decoded-tsv", default="", help="Optional TSV with deterministic decode of optimized latents.")
     parser.add_argument("--summary-json", default="")
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--steps", type=int, default=200)
     parser.add_argument("--lr", type=float, default=0.03)
     parser.add_argument("--z-l2", type=float, default=1e-5)
     parser.add_argument("--grad-clip", type=float, default=5.0)
-    parser.add_argument("--save-every", type=int, default=20)
+    parser.add_argument("--save-every", type=int, default=64, help="Save after this many newly optimized rows; 0 saves every batch.")
     parser.add_argument("--decode-batch-size", type=int, default=2)
+    parser.add_argument("--final-eval-limit", type=int, default=512, help="Decode only this many optimized rows for final summary; 0 decodes all rows.")
+    parser.add_argument("--skip-final-decode", action="store_true", help="Skip final deterministic decode/summary; useful for long train split inversion.")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--sdvae-root", default=str(root / "sdvae"))
     parser.add_argument("--saved_model", default=str(root / "sdvae" / "dropbox/results/zinc/zinc_kl_avg.model"))
@@ -170,8 +173,9 @@ def main() -> None:
 
     skipped: list[dict[str, Any]] = []
     losses: list[float] = []
-    processed_rows: list[dict[str, Any]] = []
     total = len(rows)
+    run_start = time.time()
+    last_saved_count = len(optimized)
     for start in range(0, total, max(1, args.batch_size)):
         chunk = [row for row in rows[start : start + args.batch_size] if row["cid"] not in optimized]
         if not chunk:
@@ -183,19 +187,53 @@ def main() -> None:
         z_best, loss = optimize_batch(proxy, z_init, true_t, mask_t, args.steps, args.lr, args.z_l2, args.grad_clip)
         for row, latent in zip(ok_rows, z_best):
             optimized[row["cid"]] = latent.float().cpu()
-            processed_rows.append(row)
             losses.append(loss)
         done = min(start + args.batch_size, total)
-        print(f"optimized {len(optimized)}/{total} rows | last_batch_loss={loss:.4f} | skipped={len(skipped)}")
-        if args.save_every and len(optimized) % args.save_every < len(ok_rows):
+        elapsed = max(time.time() - run_start, 1e-6)
+        current_run_rows = max(len(optimized) - last_saved_count, 0)
+        rows_per_min = len(losses) / elapsed * 60.0
+        print(
+            f"optimized {len(optimized)}/{total} rows | last_batch_loss={loss:.4f} "
+            f"| skipped={len(skipped)} | run_rows_per_min={rows_per_min:.2f}",
+            flush=True,
+        )
+        if args.save_every == 0 or len(optimized) - last_saved_count >= args.save_every:
             atomic_torch_save(optimized, output_latents)
+            last_saved_count = len(optimized)
 
     atomic_torch_save(optimized, output_latents)
 
-    eval_rows = [row for row in rows if row["cid"] in optimized]
-    z_eval = torch.stack([optimized[row["cid"]].float().view(-1) for row in eval_rows]) if eval_rows else torch.empty(0, args.latent_dim_sdvae)
-    decoded = decode_latents(proxy, z_eval, args.decode_batch_size, use_random=False) if eval_rows else []
-    metrics = summarize_reconstruction(eval_rows, decoded)
+    eval_rows_all = [row for row in rows if row["cid"] in optimized]
+    if args.skip_final_decode:
+        eval_rows: list[dict[str, Any]] = []
+        decoded: list[str] = []
+        metrics = {
+            "samples": 0,
+            "valid": 0,
+            "validity": None,
+            "exact_match_raw_smiles": None,
+            "exact_match_canonical_smiles": None,
+            "levenshtein_distance": None,
+            "maccs_fingerprint_similarity": None,
+            "rdkit_fingerprint_similarity": None,
+            "morgan_fingerprint_similarity": None,
+            "final_decode_skipped": True,
+        }
+    else:
+        eval_rows = eval_rows_all[: args.final_eval_limit] if args.final_eval_limit > 0 else eval_rows_all
+        z_eval = torch.stack([optimized[row["cid"]].float().view(-1) for row in eval_rows]) if eval_rows else torch.empty(0, args.latent_dim_sdvae)
+        decoded = decode_latents(proxy, z_eval, args.decode_batch_size, use_random=False) if eval_rows else []
+        metrics = summarize_reconstruction(eval_rows, decoded)
+
+    skipped_path = output_latents.with_suffix(".skipped.tsv")
+    if skipped:
+        with skipped_path.open("w", newline="") as f:
+            writer = csv.DictWriter(f, delimiter="\t", fieldnames=["cid", "smiles", "description", "error"])
+            writer.writeheader()
+            for row in skipped:
+                writer.writerow(row)
+        metrics["skipped_file"] = str(skipped_path)
+
     metrics.update(
         {
             "split": args.split,
@@ -203,6 +241,8 @@ def main() -> None:
             "requested_rows": len(rows),
             "optimized_rows": len(optimized),
             "skipped_rows": len(skipped),
+            "evaluated_rows": len(eval_rows),
+            "final_eval_limit": args.final_eval_limit,
             "mean_optimization_loss": float(np.mean(losses)) if losses else None,
             "steps": args.steps,
             "lr": args.lr,
@@ -211,20 +251,12 @@ def main() -> None:
     )
     summary_json.write_text(json.dumps(metrics, indent=2, ensure_ascii=False) + "\n")
 
-    with decoded_tsv.open("w", newline="") as f:
-        writer = csv.DictWriter(f, delimiter="\t", fieldnames=["CID", "reference_smiles", "decoded_smiles", "description"])
-        writer.writeheader()
-        for row, pred in zip(eval_rows, decoded):
-            writer.writerow({"CID": row["cid"], "reference_smiles": row["smiles"], "decoded_smiles": pred, "description": row["description"]})
-
-    if skipped:
-        skipped_path = output_latents.with_suffix(".skipped.tsv")
-        with skipped_path.open("w", newline="") as f:
-            writer = csv.DictWriter(f, delimiter="\t", fieldnames=["cid", "smiles", "description", "error"])
+    if not args.skip_final_decode:
+        with decoded_tsv.open("w", newline="") as f:
+            writer = csv.DictWriter(f, delimiter="\t", fieldnames=["CID", "reference_smiles", "decoded_smiles", "description"])
             writer.writeheader()
-            for row in skipped:
-                writer.writerow(row)
-        metrics["skipped_file"] = str(skipped_path)
+            for row, pred in zip(eval_rows, decoded):
+                writer.writerow({"CID": row["cid"], "reference_smiles": row["smiles"], "decoded_smiles": pred, "description": row["description"]})
 
     print(json.dumps(metrics, indent=2, ensure_ascii=False))
 

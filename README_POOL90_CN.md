@@ -392,6 +392,7 @@ LR=0.03 \
 Z_L2=0.00001 \
 BATCH_SIZE=2 \
 DECODE_BATCH_SIZE=2 \
+FINAL_EVAL_LIMIT=128 \
 OUTPUT_LATENTS=/home/six_ssp/my_project/ChEBI-20_data/test_pool90_sdvae_latents_inverted_128.pt \
 ./09_optimize_sdvae_latents.sh
 ```
@@ -404,11 +405,15 @@ LIMIT=0 \
 STEPS=200 \
 LR=0.03 \
 Z_L2=0.00001 \
-BATCH_SIZE=4 \
+BATCH_SIZE=32 \
 DECODE_BATCH_SIZE=2 \
+SAVE_EVERY=64 \
+FINAL_EVAL_LIMIT=512 \
 OUTPUT_LATENTS=/home/six_ssp/my_project/ChEBI-20_data/train_pool90_sdvae_latents_inverted.pt \
 ./09_optimize_sdvae_latents.sh
 ```
+
+如果 `BATCH_SIZE=32` OOM，就降到 `16` 或 `8` 后继续跑；脚本会从已有 `OUTPUT_LATENTS` 断点续跑。如果只需要生成训练用 latent、不想在最后解码抽样评估，可以加 `SKIP_FINAL_DECODE=1`。正式记录指标时建议保留 `FINAL_EVAL_LIMIT=512` 或设为 `0` 做全量重构评估。
 
 用反演后的 latent 训练 diffusion：
 

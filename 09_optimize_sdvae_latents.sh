@@ -20,12 +20,15 @@ LIMIT="${LIMIT:-0}"
 OUTPUT_LATENTS="${OUTPUT_LATENTS:-${DATASET_DIR}/${SPLIT}_sdvae_latents_inverted.pt}"
 SUMMARY_JSON="${SUMMARY_JSON:-${OUTPUT_LATENTS%.pt}.summary.json}"
 DECODED_TSV="${DECODED_TSV:-${OUTPUT_LATENTS%.pt}.decoded.tsv}"
-BATCH_SIZE="${BATCH_SIZE:-4}"
+BATCH_SIZE="${BATCH_SIZE:-16}"
 STEPS="${STEPS:-200}"
 LR="${LR:-0.03}"
 Z_L2="${Z_L2:-0.00001}"
 GRAD_CLIP="${GRAD_CLIP:-5.0}"
+SAVE_EVERY="${SAVE_EVERY:-64}"
 DECODE_BATCH_SIZE="${DECODE_BATCH_SIZE:-2}"
+FINAL_EVAL_LIMIT="${FINAL_EVAL_LIMIT:-512}"
+SKIP_FINAL_DECODE="${SKIP_FINAL_DECODE:-0}"
 RESUME="${RESUME:-1}"
 DEVICE_MODE="${DEVICE_MODE:-auto}"
 SDVAE_ROOT="${SDVAE_ROOT:-${ROOT_DIR}/sdvae}"
@@ -55,7 +58,9 @@ CMD=(
   --lr "${LR}"
   --z-l2 "${Z_L2}"
   --grad-clip "${GRAD_CLIP}"
+  --save-every "${SAVE_EVERY}"
   --decode-batch-size "${DECODE_BATCH_SIZE}"
+  --final-eval-limit "${FINAL_EVAL_LIMIT}"
   --mode "${DEVICE_MODE}"
   --sdvae-root "${SDVAE_ROOT}"
   --saved_model "${SDVAE_SAVED_MODEL}"
@@ -67,6 +72,9 @@ if [[ -n "${PROMPT_FILE}" ]]; then
 fi
 if [[ "${RESUME}" == "1" ]]; then
   CMD+=(--resume)
+fi
+if [[ "${SKIP_FINAL_DECODE}" == "1" ]]; then
+  CMD+=(--skip-final-decode)
 fi
 
 cd "${ROOT_DIR}"
