@@ -5,8 +5,11 @@ import sys
 from pathlib import Path
 
 import torch
+from rdkit import DataStructs
 from rdkit import Chem
 from rdkit import RDLogger
+from rdkit.Chem import AllChem
+from rdkit.Chem import MACCSkeys
 from transformers import AutoModel
 from transformers import AutoTokenizer
 from transformers import set_seed
@@ -78,6 +81,12 @@ def create_argparser():
     parser.add_argument("--prompt", action="append", default=[])
     parser.add_argument("--prompt-file", default=None)
     parser.add_argument("--num-samples-per-prompt", type=int, default=1)
+    parser.add_argument("--oversample-factor", type=int, default=1)
+    parser.add_argument("--select-valid-unique", action="store_true")
+    parser.add_argument("--decode-random", action="store_true")
+    parser.add_argument("--candidate-output", default=None)
+    parser.add_argument("--rerank-reference-file", default=None)
+    parser.add_argument("--rerank-metric", choices=["none", "morgan", "maccs", "rdk"], default="none")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--work-chunk-size", type=int, default=256)
     parser.add_argument("--decode-batch-size", type=int, default=32)
@@ -123,6 +132,115 @@ def load_prompts(args):
     if not prompts:
         raise ValueError("no prompt provided, use --prompt or --prompt-file")
     return prompts
+
+
+def canon_smiles(smi):
+    mol = Chem.MolFromSmiles(smi) if smi else None
+    if mol is None:
+        return None, None
+    return Chem.MolToSmiles(mol, canonical=True), mol
+
+
+def load_reference_by_prompt(reference_file):
+    if not reference_file:
+        return {}
+    import csv
+
+    path = resolve_path(reference_file, SCRIPT_DIR)
+    references = {}
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        for row in reader:
+            prompt = (row.get("description") or "").strip()
+            smi = (row.get("SMILES") or "").strip()
+            if not prompt or not smi or smi == "*":
+                continue
+            canon, mol = canon_smiles(smi)
+            if mol is None:
+                continue
+            references.setdefault(prompt, {"smiles": smi, "canon": canon, "mol": mol})
+    return references
+
+
+def fp_for_metric(mol, metric):
+    if metric == "morgan":
+        return AllChem.GetMorganFingerprint(mol, 2)
+    if metric == "maccs":
+        return MACCSkeys.GenMACCSKeys(mol)
+    if metric == "rdk":
+        return Chem.RDKFingerprint(mol)
+    return None
+
+
+def reference_similarity(candidate, reference, metric):
+    if metric == "none" or reference is None or candidate["mol"] is None:
+        return 0.0
+    try:
+        ref_fp = fp_for_metric(reference["mol"], metric)
+        gen_fp = fp_for_metric(candidate["mol"], metric)
+        return float(DataStructs.TanimotoSimilarity(ref_fp, gen_fp))
+    except Exception:
+        return 0.0
+
+
+def select_prompt_candidates(candidates, target_n, select_valid_unique, reference, rerank_metric):
+    for idx, candidate in enumerate(candidates):
+        candidate["rank_score"] = reference_similarity(candidate, reference, rerank_metric)
+        candidate["candidate_order"] = idx
+
+    if rerank_metric != "none":
+        ordered = sorted(
+            candidates,
+            key=lambda item: (item["rank_score"], item["is_valid"], -item["candidate_order"]),
+            reverse=True,
+        )
+    else:
+        ordered = list(candidates)
+
+    if not select_valid_unique:
+        return ordered[:target_n]
+
+    selected = []
+    selected_ids = set()
+    seen = set()
+    for item in ordered:
+        if item["is_valid"] and item["canon"] and item["canon"] not in seen:
+            selected.append(item)
+            selected_ids.add(id(item))
+            seen.add(item["canon"])
+            if len(selected) >= target_n:
+                return selected
+
+    for item in ordered:
+        if id(item) in selected_ids:
+            continue
+        if item["is_valid"]:
+            selected.append(item)
+            selected_ids.add(id(item))
+            if len(selected) >= target_n:
+                return selected
+
+    for item in ordered:
+        if id(item) in selected_ids:
+            continue
+        selected.append(item)
+        selected_ids.add(id(item))
+        if len(selected) >= target_n:
+            return selected
+    return selected
+
+
+def write_rows(output_path, rows, sample_idx_key="sample_idx"):
+    valid = 0
+    with open(output_path, "w") as f:
+        f.write("prompt_id\tsample_idx\tprompt\tgenerated_smiles\tis_valid\tlatent\n")
+        for row in rows:
+            valid += int(row["is_valid"])
+            f.write(
+                f"{row['prompt_id']}\t{row[sample_idx_key]}\t{row['prompt']}\t"
+                f"{row['smiles']}\t{int(row['is_valid'])}\t{row['latent']}\n"
+            )
+    return valid
 
 
 def resolve_text_model_name(text_model):
@@ -251,17 +369,31 @@ def decode_latents_in_chunks(proxy, latents, decode_batch_size, use_random=False
 def main():
     args = create_argparser().parse_args()
     set_seed(args.seed)
+    if args.oversample_factor < 1:
+        raise ValueError("--oversample-factor must be >= 1")
+    if args.rerank_metric != "none" and not args.rerank_reference_file:
+        raise ValueError("--rerank-reference-file is required when --rerank-metric is set")
 
     args.model_path = str(resolve_path(args.model_path, SCRIPT_DIR))
     args.output = str(resolve_path(args.output, SCRIPT_DIR))
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+    if args.candidate_output:
+        args.candidate_output = str(resolve_path(args.candidate_output, SCRIPT_DIR))
+        os.makedirs(os.path.dirname(args.candidate_output) or ".", exist_ok=True)
 
     prompts = load_prompts(args)
+    draws_per_prompt = args.num_samples_per_prompt * args.oversample_factor
     expanded = []
     for prompt_id, prompt in enumerate(prompts):
-        for sample_idx in range(args.num_samples_per_prompt):
+        for sample_idx in range(draws_per_prompt):
             expanded.append((prompt_id, sample_idx, prompt))
-    total_samples = len(expanded)
+    total_candidates = len(expanded)
+    collect_candidates = (
+        args.oversample_factor > 1
+        or args.select_valid_unique
+        or args.rerank_metric != "none"
+        or bool(args.candidate_output)
+    )
 
     device = resolve_device(args.device, args.gpu_id)
     print(f"device={device}")
@@ -301,21 +433,31 @@ def main():
     sample_fn = diffusion.ddim_sample_loop if args.use_ddim else diffusion.p_sample_loop
 
     proxy = maybe_load_proxy(args)
+    references = load_reference_by_prompt(args.rerank_reference_file) if args.rerank_reference_file else {}
+    if args.rerank_metric != "none":
+        missing = sum(1 for prompt in prompts if prompt not in references)
+        if missing:
+            print(f"[warn] missing reference for {missing}/{len(prompts)} prompts; those prompts use validity/unique ranking only.")
+
     valid = 0
+    collected = []
     chunk_size = max(args.batch_size, args.work_chunk_size)
-    outer_iter = range(0, total_samples, chunk_size)
+    outer_iter = range(0, total_candidates, chunk_size)
     if tqdm is not None:
         outer_iter = tqdm(
             outer_iter,
-            total=(total_samples + chunk_size - 1) // chunk_size,
+            total=(total_candidates + chunk_size - 1) // chunk_size,
             desc="generate chunks",
             unit="chunk",
         )
 
-    with open(args.output, "w") as f:
-        f.write("prompt_id\tsample_idx\tprompt\tgenerated_smiles\tis_valid\tlatent\n")
+    output_handle = None
+    if not collect_candidates:
+        output_handle = open(args.output, "w")
+        output_handle.write("prompt_id\tsample_idx\tprompt\tgenerated_smiles\tis_valid\tlatent\n")
+    try:
         for chunk_start in outer_iter:
-            chunk_end = min(chunk_start + chunk_size, total_samples)
+            chunk_end = min(chunk_start + chunk_size, total_candidates)
             chunk_meta = expanded[chunk_start:chunk_end]
             chunk_prompts = [x[2] for x in chunk_meta]
 
@@ -359,26 +501,70 @@ def main():
                 proxy,
                 latents,
                 decode_batch_size=args.decode_batch_size,
-                use_random=False,
+                use_random=args.decode_random,
             )
 
             for (prompt_id, sample_idx, prompt), smi, latent in zip(chunk_meta, smiles, latents):
-                is_valid = int(bool(smi) and Chem.MolFromSmiles(smi) is not None)
-                valid += is_valid
-                f.write(
-                    f"{prompt_id}\t{sample_idx}\t{prompt}\t{smi}\t{is_valid}\t{latent.tolist()}\n"
-                )
+                canon, mol = canon_smiles(smi)
+                is_valid = int(mol is not None)
+                row = {
+                    "prompt_id": prompt_id,
+                    "sample_idx": sample_idx,
+                    "prompt": prompt,
+                    "smiles": smi,
+                    "is_valid": is_valid,
+                    "canon": canon,
+                    "mol": mol,
+                    "latent": latent.tolist(),
+                }
+                if collect_candidates:
+                    collected.append(row)
+                else:
+                    valid += is_valid
+                    output_handle.write(
+                        f"{prompt_id}\t{sample_idx}\t{prompt}\t{smi}\t{is_valid}\t{latent.tolist()}\n"
+                    )
 
-            f.flush()
+            if output_handle is not None:
+                output_handle.flush()
             del desc_states, desc_masks, latent_chunks, latents, smiles
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+    finally:
+        if output_handle is not None:
+            output_handle.close()
 
-    total = total_samples
+    total = len(prompts) * args.num_samples_per_prompt
+    if collect_candidates:
+        if args.candidate_output:
+            write_rows(args.candidate_output, collected)
+
+        by_prompt = {}
+        for row in collected:
+            by_prompt.setdefault(row["prompt_id"], []).append(row)
+        selected = []
+        for prompt_id in range(len(prompts)):
+            prompt_candidates = by_prompt.get(prompt_id, [])
+            reference = references.get(prompts[prompt_id])
+            chosen = select_prompt_candidates(
+                prompt_candidates,
+                args.num_samples_per_prompt,
+                args.select_valid_unique,
+                reference,
+                args.rerank_metric,
+            )
+            for out_idx, row in enumerate(chosen):
+                row = dict(row)
+                row["sample_idx"] = out_idx
+                selected.append(row)
+        valid = write_rows(args.output, selected)
+        total = len(selected)
+
     valid_ratio = (valid / total) if total else 0.0
     print(
-        f"saved {total} samples to {args.output} | valid={valid} | valid_ratio={valid_ratio:.4f}"
+        f"saved {total} samples to {args.output} | candidates={total_candidates} | "
+        f"valid={valid} | valid_ratio={valid_ratio:.4f}"
     )
 
 

@@ -305,6 +305,37 @@ GENERATED_FILE=/home/six_ssp/my_project/ChEBI-20_data/prompt_generated_256x8.tsv
 ./05_evaluate.sh
 ```
 
+### 7.6 多样性优化生成
+
+```bash
+MODE=generate \
+TEXT_FUSION=crossattn \
+EVAL_NUM_PROMPTS=128 \
+NUM_SAMPLES_PER_PROMPT=8 \
+OVERSAMPLE_FACTOR=4 \
+SELECT_VALID_UNIQUE=1 \
+DECODE_RANDOM=1 \
+GEN_BATCH_SIZE=2 \
+DECODE_BATCH_SIZE=4 \
+OUTPUT=/home/six_ssp/my_project/ChEBI-20_data/prompt_generated_diverse.tsv \
+./07_full_pipeline.sh
+```
+
+含义：
+
+- `OVERSAMPLE_FACTOR=4`：每个 prompt 先生成 `8*4=32` 个候选，再筛成 8 个输出。
+- `SELECT_VALID_UNIQUE=1`：优先选择合法且去重后的分子，缓解同 prompt 重复。
+- `DECODE_RANDOM=1`：启用 SD-VAE 随机解码，通常能提高多样性，但候选无效率会上升，所以建议配合过采样和合法过滤。
+
+如果只是做 benchmark 分析，也可以加：
+
+```bash
+RERANK_REFERENCE_FILE=/home/six_ssp/my_project/ChEBI-20_data/test_pool90.txt \
+RERANK_METRIC=morgan
+```
+
+注意：`RERANK_REFERENCE_FILE` 使用真实参考 SMILES，是 oracle rerank，只适合分析上限或 ablation，不适合作为真实生成能力直接报告。
+
 ---
 
 ## 8. 参数说明（高频）
@@ -343,9 +374,15 @@ GENERATED_FILE=/home/six_ssp/my_project/ChEBI-20_data/prompt_generated_256x8.tsv
 | `GEN_BATCH_SIZE` | 自动 | 扩散采样阶段 batch size |
 | `WORK_CHUNK_SIZE` | `256` | 分块生成大小，控制主内存峰值 |
 | `DECODE_BATCH_SIZE` | `32` | SD-VAE 解码阶段 batch size（OOM 首先调小它） |
+| `OVERSAMPLE_FACTOR` | `1` | 每个 prompt 的候选过采样倍数 |
+| `SELECT_VALID_UNIQUE` | `0` | 是否优先输出合法且唯一的候选 |
+| `DECODE_RANDOM` | `0` | 是否启用 SD-VAE 随机解码 |
+| `CANDIDATE_OUTPUT` | 空 | 可选，保存过采样候选全集 |
+| `RERANK_REFERENCE_FILE` | 空 | 可选，benchmark 用真实参考文件 |
+| `RERANK_METRIC` | `none` | 可选，`morgan/maccs/rdk` |
 | `OUTPUT` | `prompt_generated_large.tsv` | 生成文件路径 |
 
-总样本数约为 `EVAL_NUM_PROMPTS * NUM_SAMPLES_PER_PROMPT`。
+最终输出样本数约为 `EVAL_NUM_PROMPTS * NUM_SAMPLES_PER_PROMPT`；实际候选数为该值乘以 `OVERSAMPLE_FACTOR`。
 
 ### 8.4 空间管理参数
 

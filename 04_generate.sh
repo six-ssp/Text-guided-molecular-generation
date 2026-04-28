@@ -28,6 +28,12 @@ NUM_SAMPLES_PER_PROMPT="${NUM_SAMPLES_PER_PROMPT:-8}"
 BATCH_SIZE="${BATCH_SIZE:-8}"
 WORK_CHUNK_SIZE="${WORK_CHUNK_SIZE:-256}"
 DECODE_BATCH_SIZE="${DECODE_BATCH_SIZE:-32}"
+OVERSAMPLE_FACTOR="${OVERSAMPLE_FACTOR:-1}"
+SELECT_VALID_UNIQUE="${SELECT_VALID_UNIQUE:-0}"
+DECODE_RANDOM="${DECODE_RANDOM:-0}"
+CANDIDATE_OUTPUT="${CANDIDATE_OUTPUT:-}"
+RERANK_REFERENCE_FILE="${RERANK_REFERENCE_FILE:-}"
+RERANK_METRIC="${RERANK_METRIC:-none}"
 DEVICE="${DEVICE:-auto}"
 GPU_ID="${GPU_ID:-0}"
 TEXT_FUSION="${TEXT_FUSION:-pooled}"
@@ -55,39 +61,46 @@ fi
 
 cd "${ROOT_DIR}"
 
+COMMON_ARGS=(
+  --model-path "${MODEL_PATH}"
+  --output "${OUTPUT}"
+  --num-samples-per-prompt "${NUM_SAMPLES_PER_PROMPT}"
+  --oversample-factor "${OVERSAMPLE_FACTOR}"
+  --batch-size "${BATCH_SIZE}"
+  --work-chunk-size "${WORK_CHUNK_SIZE}"
+  --decode-batch-size "${DECODE_BATCH_SIZE}"
+  --device "${DEVICE}"
+  --gpu-id "${GPU_ID}"
+  --text-fusion "${TEXT_FUSION}"
+  --text-attn-heads "${TEXT_ATTN_HEADS}"
+  --sdvae-root "${SDVAE_ROOT}"
+  --saved_model "${SDVAE_MODEL}"
+  --grammar_file "${SDVAE_GRAMMAR}"
+  --rerank-metric "${RERANK_METRIC}"
+)
+
+if [[ "${SELECT_VALID_UNIQUE}" == "1" ]]; then
+  COMMON_ARGS+=(--select-valid-unique)
+fi
+if [[ "${DECODE_RANDOM}" == "1" ]]; then
+  COMMON_ARGS+=(--decode-random)
+fi
+if [[ -n "${CANDIDATE_OUTPUT}" ]]; then
+  COMMON_ARGS+=(--candidate-output "${CANDIDATE_OUTPUT}")
+fi
+if [[ -n "${RERANK_REFERENCE_FILE}" ]]; then
+  COMMON_ARGS+=(--rerank-reference-file "${RERANK_REFERENCE_FILE}")
+fi
+
 if [[ -f "${PROMPT_FILE}" ]]; then
   "${PYTHON_BIN}" "${ROOT_DIR}/tgm-dlm/improved-diffusion/scripts/text_guided_generate.py" \
-    --model-path "${MODEL_PATH}" \
-    --output "${OUTPUT}" \
     --prompt-file "${PROMPT_FILE}" \
-    --num-samples-per-prompt "${NUM_SAMPLES_PER_PROMPT}" \
-    --batch-size "${BATCH_SIZE}" \
-    --work-chunk-size "${WORK_CHUNK_SIZE}" \
-    --decode-batch-size "${DECODE_BATCH_SIZE}" \
-    --device "${DEVICE}" \
-    --gpu-id "${GPU_ID}" \
-    --text-fusion "${TEXT_FUSION}" \
-    --text-attn-heads "${TEXT_ATTN_HEADS}" \
-    --sdvae-root "${SDVAE_ROOT}" \
-    --saved_model "${SDVAE_MODEL}" \
-    --grammar_file "${SDVAE_GRAMMAR}"
+    "${COMMON_ARGS[@]}"
 else
   "${PYTHON_BIN}" "${ROOT_DIR}/tgm-dlm/improved-diffusion/scripts/text_guided_generate.py" \
-    --model-path "${MODEL_PATH}" \
-    --output "${OUTPUT}" \
     --prompt "The molecule is an aromatic amide." \
     --prompt "The molecule is a long-chain fatty alcohol." \
-    --num-samples-per-prompt "${NUM_SAMPLES_PER_PROMPT}" \
-    --batch-size "${BATCH_SIZE}" \
-    --work-chunk-size "${WORK_CHUNK_SIZE}" \
-    --decode-batch-size "${DECODE_BATCH_SIZE}" \
-    --device "${DEVICE}" \
-    --gpu-id "${GPU_ID}" \
-    --text-fusion "${TEXT_FUSION}" \
-    --text-attn-heads "${TEXT_ATTN_HEADS}" \
-    --sdvae-root "${SDVAE_ROOT}" \
-    --saved_model "${SDVAE_MODEL}" \
-    --grammar_file "${SDVAE_GRAMMAR}"
+    "${COMMON_ARGS[@]}"
 fi
 
 echo "generated -> ${OUTPUT}"
