@@ -53,30 +53,20 @@ for model in "${MODELS[@]}"; do
   "${ROOT_DIR}/07_full_pipeline.sh"
 
   metrics="$(JSON_ONLY=1 GENERATED_FILE="${out_file}" "${ROOT_DIR}/05_evaluate.sh")"
-  valid_ratio="$(echo "${metrics}" | "${ROOT_DIR}/.mamba-tgmsd/bin/python" - <<'PY'
-import json, sys
-data = json.loads(sys.stdin.read())
-print(data["valid_ratio"])
+  read -r valid_ratio unique_ratio novelty_ratio diversity < <(
+    METRICS_JSON="${metrics}" "${ROOT_DIR}/.mamba-tgmsd/bin/python" - <<'PY'
+import json
+import os
+
+data = json.loads(os.environ["METRICS_JSON"])
+print(
+    data["valid_ratio"],
+    data["unique_ratio_among_valid"],
+    data["novelty_ratio_unique_valid"],
+    data["internal_diversity_unique_valid"],
+)
 PY
-)"
-  unique_ratio="$(echo "${metrics}" | "${ROOT_DIR}/.mamba-tgmsd/bin/python" - <<'PY'
-import json, sys
-data = json.loads(sys.stdin.read())
-print(data["unique_ratio_among_valid"])
-PY
-)"
-  novelty_ratio="$(echo "${metrics}" | "${ROOT_DIR}/.mamba-tgmsd/bin/python" - <<'PY'
-import json, sys
-data = json.loads(sys.stdin.read())
-print(data["novelty_ratio_unique_valid"])
-PY
-)"
-  diversity="$(echo "${metrics}" | "${ROOT_DIR}/.mamba-tgmsd/bin/python" - <<'PY'
-import json, sys
-data = json.loads(sys.stdin.read())
-print(data["internal_diversity_unique_valid"])
-PY
-)"
+  )
   printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "${step_num}" "${model}" "${out_file}" "${valid_ratio}" "${unique_ratio}" "${novelty_ratio}" "${diversity}" >> "${SUMMARY_FILE}"
   count=$((count + 1))
 done

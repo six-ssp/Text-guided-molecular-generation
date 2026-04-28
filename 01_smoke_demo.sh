@@ -27,4 +27,4 @@ export SDVAE_SAVED_MODEL="${SDVAE_SAVED_MODEL:-${ROOT_DIR}/sdvae/dropbox/results
 export SDVAE_GRAMMAR_FILE="${SDVAE_GRAMMAR_FILE:-${ROOT_DIR}/sdvae/dropbox/context_free_grammars/mol_zinc.grammar}"
 
 cd "${ROOT_DIR}"
-"${PYTHON_BIN}" "${ROOT_DIR}/tgm-dlm/improved-diffusion/scripts/run_chebi20_smoke_demo.sh"
+bash "${ROOT_DIR}/tgm-dlm/improved-diffusion/scripts/run_chebi20_smoke_demo.sh"

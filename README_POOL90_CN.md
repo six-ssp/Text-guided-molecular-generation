@@ -6,7 +6,7 @@
 
 当前实现是可跑通、可续训、可评估、可清理磁盘的一套本地工程方案，重点是工程可用性和实验迭代效率。
 
-说明：这份 README 按之前本地工程的实际改造状态恢复。当前工作区里根目录脚本已经不在了，所以这份文档记录的是“上一次可运行版本”的结构与用法。
+说明：这份 README 对应当前本地工程状态；根目录脚本、环境修复逻辑、生成/评估入口均已恢复。
 
 ---
 
@@ -51,6 +51,20 @@
 - `per_prompt_unique_ratio_mean = 0.1803`
 - 跨 prompt 重合分子数 `12`（跨描述混淆不高）
 
+逐参考分子指标（2026-04-28，`scripts/evaluate_text_guided_metrics.py`）：
+
+- `BLEU = 0.2453`
+- `Exact match = 0.0000`
+- `Levenshtein distance = 40.0526`
+- `MACCS FTS = 0.2910`
+- `RDK FTS = 0.1995`
+- `Morgan FTS = 0.1000`
+- `FCD = 19.0648`
+- `Text2Mol score`：当前未计算（本地没有 Text2Mol matching model）
+- `Validity = 0.9395`
+
+这两类指标口径不同：`valid/unique/novelty/diversity` 评价生成集合本身；BLEU、Exact、指纹相似度和 FCD 更接近“是否生成到参考答案分子”。
+
 ### 1.4 当前主要问题
 
 1. **同一 prompt 下多样性不足（主问题）**  
@@ -76,6 +90,7 @@
 - `03_train.sh`：训练封装。
 - `04_generate.sh`：生成封装。
 - `05_evaluate.sh`：评估脚本（有效率/唯一率/新颖性/多样性）。
+- `scripts/evaluate_text_guided_metrics.py`：逐参考分子九指标评估脚本（BLEU、Exact、Levenshtein、指纹相似度、FCD、Validity；Text2Mol 支持外部结果导入）。
 - `README_POOL90_CN.md`：本说明。
 
 ### 2.2 模型与数据关键代码（tgm-dlm 内）
@@ -555,4 +570,4 @@ MODE=evaluate OUTPUT=/home/six_ssp/my_project/ChEBI-20_data/prompt_generated_lar
 
 - 本文档面向当前本地工程实现，不保证与上游开源仓库保持同步。
 - 你本地脚本和权重路径如果调整过，以本地实际文件为准。
-- 如果当前根目录脚本缺失，这份 README 可作为恢复之前工程结构的参考。
+- GitHub 公开仓库默认不包含本地数据、训练日志、权重和 `.mamba-tgmsd` 环境；复现实验前需要按本文档准备数据和模型资源。
