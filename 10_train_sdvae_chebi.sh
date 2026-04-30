@@ -32,15 +32,18 @@ TRAIN_LIMIT="${TRAIN_LIMIT:-0}"
 VALID_LIMIT="${VALID_LIMIT:-0}"
 BUILD_CHUNK_SIZE="${BUILD_CHUNK_SIZE:-512}"
 
-SAVE_DIR="${SAVE_DIR:-${ROOT_DIR}/sdvae/dropbox/results/chebi_pool90}"
-INIT_MODEL="${INIT_MODEL:-${ROOT_DIR}/sdvae/dropbox/results/zinc/zinc_kl_avg.model}"
-FROM_SCRATCH="${FROM_SCRATCH:-0}"
+SAVE_DIR="${SAVE_DIR:-${ROOT_DIR}/sdvae/dropbox/results/chebi_pool90_scratch}"
+DEFAULT_ZINC_INIT="${ROOT_DIR}/sdvae/dropbox/results/zinc/zinc_kl_avg.model"
+FROM_SCRATCH="${FROM_SCRATCH:-1}"
+INIT_MODEL="${INIT_MODEL:-}"
 if [[ "${FROM_SCRATCH}" == "1" ]]; then
   INIT_MODEL=""
+elif [[ -z "${INIT_MODEL}" ]]; then
+  INIT_MODEL="${DEFAULT_ZINC_INIT}"
 fi
 
-EPOCHS="${EPOCHS:-20}"
-BATCH_SIZE="${BATCH_SIZE:-64}"
+EPOCHS="${EPOCHS:-80}"
+BATCH_SIZE="${BATCH_SIZE:-128}"
 LEARNING_RATE="${LEARNING_RATE:-0.0003}"
 KL_COEFF="${KL_COEFF:-1.0}"
 EPS_STD="${EPS_STD:-0.01}"

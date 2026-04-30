@@ -15,7 +15,7 @@ fi
 
 DATASET_DIR="${DATASET_DIR:-${ROOT_DIR}/ChEBI-20_data}"
 SDVAE_ROOT="${SDVAE_ROOT:-${ROOT_DIR}/sdvae}"
-SDVAE_SAVED_MODEL="${SDVAE_SAVED_MODEL:-${ROOT_DIR}/sdvae/dropbox/results/chebi_pool90/epoch-best.model}"
+SDVAE_SAVED_MODEL="${SDVAE_SAVED_MODEL:-${ROOT_DIR}/sdvae/dropbox/results/chebi_pool90_scratch/epoch-best.model}"
 SDVAE_GRAMMAR_FILE="${SDVAE_GRAMMAR_FILE:-${ROOT_DIR}/sdvae/dropbox/context_free_grammars/mol_zinc.grammar}"
 if [[ ! -d "${SDVAE_ROOT}/mol_vae" ]]; then
   SDVAE_ROOT="${ROOT_DIR}/sdvae"

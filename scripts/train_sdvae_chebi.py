@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train or fine-tune SD-VAE on ChEBI SD-VAE tensor dumps."""
+"""Train SD-VAE on ChEBI SD-VAE tensor dumps."""
 
 from __future__ import annotations
 
@@ -31,10 +31,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--train-data", default=str(root / "ChEBI-20_data/sdvae_chebi/train_pool90.pt"))
     parser.add_argument("--valid-data", default=str(root / "ChEBI-20_data/sdvae_chebi/validation_pool90.pt"))
-    parser.add_argument("--save-dir", default=str(root / "sdvae/dropbox/results/chebi_pool90"))
-    parser.add_argument("--init-model", default=str(root / "sdvae/dropbox/results/zinc/zinc_kl_avg.model"))
-    parser.add_argument("--epochs", type=int, default=20)
-    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--save-dir", default=str(root / "sdvae/dropbox/results/chebi_pool90_scratch"))
+    parser.add_argument("--init-model", default="", help="Optional warm-start checkpoint. Empty means strict scratch training.")
+    parser.add_argument("--epochs", type=int, default=80)
+    parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--kl-coeff", type=float, default=1.0)
     parser.add_argument("--eps-std", type=float, default=0.01)
