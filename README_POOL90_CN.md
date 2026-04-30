@@ -82,6 +82,9 @@
 5. **Exact match 受 SD-VAE 重构上限限制**  
    当前 SD-VAE 使用的是 ZINC 预训练权重 `zinc_kl_avg.model`。在 ChEBI-20 分子上，`SMILES -> SD-VAE latent -> SMILES` 不是无损压缩；实测小池子里直接解码真实 latent 的 canonical exact 仍为 `0`。因此后续提升 Exact 的关键不是单纯调 diffusion 采样，而是先提高 SD-VAE latent 的可解码性。
 
+6. **已新增 ChEBI-domain SD-VAE 重训入口**  
+   为了统一 SD-VAE 和 diffusion 的数据域，新增了 ChEBI 专用 SD-VAE 训练流程：从 `train_pool90 / validation_pool90` 构建 SD-VAE 训练张量，用 ChEBI 数据训练或微调 SD-VAE，再用新 SD-VAE 权重重新导出 latent。默认是从 ZINC 权重 warm-start 后在 ChEBI 上 fine-tune；如果要严格从零训练，设置 `FROM_SCRATCH=1`。
+
 ### 1.5 latent inversion 试验结果（2026-04-28，test_pool90 前 128 条）
 
 目的：验证“冻结 SD-VAE decoder，只优化每个分子的 latent”能否提高 SD-VAE 解码上限。
@@ -111,6 +114,10 @@
 - `04_generate.sh`：生成封装。
 - `05_evaluate.sh`：评估脚本（有效率/唯一率/新颖性/多样性）。
 - `09_optimize_sdvae_latents.sh`：latent inversion 入口；冻结 SD-VAE decoder，只优化每个分子的 latent，使其更容易解码回目标 SMILES。
+- `10_train_sdvae_chebi.sh`：构建 ChEBI SD-VAE 训练张量，并训练/微调 SD-VAE 权重。
+- `11_dump_chebi_sdvae_latents.sh`：用 ChEBI-domain SD-VAE 权重重新导出 `*_sdvae_chebi_latents.pt`。
+- `scripts/build_sdvae_chebi_dataset.py`：把 ChEBI split 转成 SD-VAE grammar action 张量。
+- `scripts/train_sdvae_chebi.py`：ChEBI SD-VAE 训练主程序，支持 warm-start 或从零训练。
 - `scripts/evaluate_sdvae_reconstruction.py`：评估 SD-VAE 重构上限。
 - `scripts/optimize_sdvae_latents.py`：执行 latent inversion，输出可替换训练用的 `cid -> latent` 文件。
 - `scripts/sdvae_utils.py`：SD-VAE 评估/反演共享工具函数。
@@ -145,6 +152,8 @@
 - `07_full_pipeline.sh`：总控入口（status/cleanup/prepare/train/generate/evaluate/full）。
 - `08_filter_legal.sh`：后处理过滤（合法性/规则过滤场景）。
 - `09_optimize_sdvae_latents.sh`：优化 SD-VAE latent，用于提高 SD-VAE 解码上限和后续 Exact 指标。
+- `10_train_sdvae_chebi.sh`：重训/微调 SD-VAE 到 ChEBI 数据域。
+- `11_dump_chebi_sdvae_latents.sh`：用新 SD-VAE 权重导出 ChEBI latent。
 - `run_local_oneclick.sh`：底层 one-click 执行器（被 `07` 调用）。
 
 ---
@@ -428,6 +437,63 @@ TRAIN_STEPS=1200000 \
 ```
 
 说明：`LATENT_FILE` 现在会从 `07_full_pipeline.sh` 传到训练脚本。反演 latent 改变了 diffusion 的学习目标，建议单独用新 checkpoint 目录，避免和旧实验混在一起。
+
+### 7.9 重训/微调 SD-VAE 到 ChEBI 数据域
+
+目的：统一 SD-VAE 和 diffusion 的数据集。SD-VAE 不再只依赖 ZINC 预训练权重，而是在 `train_pool90` 上训练、用 `validation_pool90` 选 best model。
+
+默认 fine-tune：从 ZINC 权重 warm-start，然后用 ChEBI 训练。
+
+```bash
+BUILD_DATA=missing \
+SAVE_DIR=/home/six_ssp/my_project/sdvae/dropbox/results/chebi_pool90 \
+EPOCHS=30 \
+BATCH_SIZE=128 \
+LEARNING_RATE=0.0003 \
+./10_train_sdvae_chebi.sh
+```
+
+严格从零训练：
+
+```bash
+FROM_SCRATCH=1 \
+BUILD_DATA=missing \
+SAVE_DIR=/home/six_ssp/my_project/sdvae/dropbox/results/chebi_pool90_scratch \
+EPOCHS=80 \
+BATCH_SIZE=128 \
+LEARNING_RATE=0.0003 \
+./10_train_sdvae_chebi.sh
+```
+
+训练完成后，用新的 SD-VAE 权重重新导出 ChEBI latent：
+
+```bash
+SDVAE_SAVED_MODEL=/home/six_ssp/my_project/sdvae/dropbox/results/chebi_pool90/epoch-best.model \
+LATENT_TAG=chebi \
+./11_dump_chebi_sdvae_latents.sh
+```
+
+然后用新 latent 训练 diffusion：
+
+```bash
+MODE=train \
+TEXT_FUSION=crossattn \
+LATENT_FILE=/home/six_ssp/my_project/ChEBI-20_data/train_pool90_sdvae_chebi_latents.pt \
+CHECKPOINT_PATH=/home/six_ssp/my_project/tgm-dlm/checkpoints_sdvae_chebi_crossattn \
+INIT_CHECKPOINT=/home/six_ssp/my_project/tgm-dlm/checkpoints_sdvae_latent_crossattn/PLAIN_model1400000.pt \
+TRAIN_STEPS=1200000 \
+./07_full_pipeline.sh
+```
+
+生成时也要指定同一个 SD-VAE 权重，否则 diffusion 生成的是 ChEBI-SD-VAE latent，但 decoder 仍会用旧 ZINC-SD-VAE：
+
+```bash
+SDVAE_SAVED_MODEL=/home/six_ssp/my_project/sdvae/dropbox/results/chebi_pool90/epoch-best.model \
+MODEL_PATH=/home/six_ssp/my_project/tgm-dlm/checkpoints_sdvae_chebi_crossattn/PLAIN_model1200000.pt \
+TEXT_FUSION=crossattn \
+MODE=generate \
+./07_full_pipeline.sh
+```
 
 ---
 
